@@ -10,7 +10,7 @@ const short prime = 31;
 
 const int samplesRate = 192000;
 //in unreliable transfer this can be increase to repeat more same signal for better decoding
-//should be equal or more than 4, otherwise frequency value can't be reliably detected as there are not enough samples 
+//should be equal or more than 4, otherwise frequency value can't be reliably detected as there are not enough samples
 const int samplesPerSignal = 16 * 4;
 
 //window used during decoding phase
@@ -42,10 +42,10 @@ const int packetSize = 1 * 1024;
 
 const int playCount = 1;
 
-const string sourceDataPath = @"C:\TEMP\app.7z";
-const string sourceWavPath = @"C:\TEMP\app.wav";
-const string outputWavPath = @"C:\TEMP\app_out.wav";
-const string outputDataPath = @"C:\TEMP\app_out.7z";
+const string sourceDataPath = @"C:\TEMP\file.txt";
+const string sourceWavPath = @"C:\TEMP\file.wav";
+const string outputWavPath = @"C:\TEMP\file.out.wav";
+const string outputDataPath = @"C:\TEMP\file.out.txt";
 
 var format = new WaveFormat(samplesRate, 1);
 var recordTime = DateTime.Now;
@@ -150,7 +150,7 @@ async Task PlayWav(IWaveIn? waveIn)
 }
 
 async Task RecordWav(IWaveIn waveIn)
-{    
+{
     var stopRecordingTask = new TaskCompletionSource<bool>();
     await using var wavOutStream = new WaveFileWriter(outputWavPath, waveIn.WaveFormat);
 
@@ -209,22 +209,22 @@ async Task TryCombineDecodedPackets(int packetsCount)
 }
 
 async Task BytesToWav()
-{    
+{
     var lastPercent = 0d;
 
     var packetsDirectoryPath = EncodedPacketsDir();
 
-    var packets = new List<(short Index, byte[] Data)>();    
-    short packetIndex = 0;        
+    var packets = new List<(short Index, byte[] Data)>();
+    short packetIndex = 0;
     short packetLength = 0;
     short packetCount = 0;
 
     //read input data and separate it into packets that will be encoded separately so that partial data can be decoded
     await using (var stream = new FileStream(sourceDataPath, FileMode.Open))
-    {        
+    {
         packetCount = (short)(stream.Length / packetSize);
         if (stream.Length % packetSize != 0)
-            packetCount++;        
+            packetCount++;
 
         var sourceData = new byte[packetSize];
         while ((packetLength = (short)await stream.ReadAsync(sourceData)) > 0)
@@ -232,56 +232,55 @@ async Task BytesToWav()
             var packetData = new byte[packetLength];
             Array.Copy(sourceData, packetData, packetLength);
             packets.Add((packetIndex++, packetData));
-        }        
-    }    
-
-    await using (var wavSourceStream = new WaveFileWriter(sourceWavPath, format))
-    {
-        var samplesData = new float[audioHeaderPreambleSize * samplesPerSignal];
-        
-        var samplesPosition = (time: 0, offset: 0);
-        samplesPosition = WriteSignalToSamples(samplesData, samplesPosition, (audioHeaderPreambleSize, packetSignal));
-        wavSourceStream.WriteSamples(samplesData, 0, samplesData.Length);
-
-        var encodedPackets = 0;
-        for (var i = 0; i < playCount; i++)
-        {
-            if (randomizePackets)
-                packets = packets.OrderBy(_ => Guid.NewGuid()).ToList();
-            foreach (var packet in packets)
-            {
-                encodedPackets++;
-                packetIndex = packet.Index;
-                packetLength = (short)packet.Data.Length;
-                if (!File.Exists(Path.Combine(packetsDirectoryPath, $"packet.{packetIndex}")))
-                {
-                    var packetCrc = CalculateArrayCrc(packet.Data, 0, packetLength);
-                    //ensure all data within the packet is accounted for it's hash
-                    packetCrc ^= packetIndex;
-                    packetCrc ^= packetCount;
-                    packetCrc ^= packetLength;
-
-                    var packetHeaderLength = packetHeaderSize * 8 * 2;
-                    var packetDataLength = packetLength * 8 * 2;                    
-                    samplesData = new float[(packetHeaderLength + packetDataLength + audioPacketPreambleSize) * samplesPerSignal];
-
-                    var headerInfo = (packetIndex, packetCount, packetLength, packetCrc);
-                    samplesPosition = (samplesPosition.time, offset: 0);                    
-                    samplesPosition = WriteDataHeaderToSamples(samplesData, samplesPosition, headerInfo);
-                    samplesPosition = WriteDataToSamples(samplesData, samplesPosition, packet.Data, packetLength);
-                    samplesPosition = WriteSignalToSamples(samplesData, samplesPosition, (audioPacketPreambleSize, packetSignal));
-
-                    wavSourceStream.WriteSamples(samplesData, 0, samplesData.Length);
-                }
-                ReportCreateProgress(encodedPackets, playCount * packetCount);
-            }
         }
+    }
 
-        samplesData = new float[audioFooterPreambleSize * samplesPerSignal];
-        samplesPosition = (samplesPosition.time, offset: 0);
-        samplesPosition = WriteSignalToSamples(samplesData, samplesPosition, (audioFooterPreambleSize, packetSignal));
-        wavSourceStream.WriteSamples(samplesData, 0, samplesData.Length);
-    }        
+    await using var wavSourceStream = new WaveFileWriter(sourceWavPath, format);
+    
+    var samples = new float[audioHeaderPreambleSize * samplesPerSignal];
+    var samplesPosition = (time: 0, offset: 0);
+    
+    samplesPosition = WriteSignalToSamples(samples, samplesPosition, (audioHeaderPreambleSize, packetSignal));
+    wavSourceStream.WriteSamples(samples, 0, samplesPosition.offset);
+
+    var packetHeaderSamplesSize = packetHeaderSize * 8 * 2;
+    var packetSamplesSize = packetSize * 8 * 2;
+    samples = new float[(packetHeaderSamplesSize + packetSamplesSize + audioPacketPreambleSize) * samplesPerSignal];
+
+    var encodedPackets = 0;
+    for (var i = 0; i < playCount; i++)
+    {
+        if (randomizePackets)
+            packets = packets.OrderBy(_ => Guid.NewGuid()).ToList();
+        foreach (var packet in packets)
+        {
+            encodedPackets++;
+            packetIndex = packet.Index;
+            packetLength = (short)packet.Data.Length;
+            if (!File.Exists(Path.Combine(packetsDirectoryPath, $"packet.{packetIndex}")))
+            {
+                var packetCrc = CalculateArrayCrc(packet.Data, 0, packetLength);
+                //ensure all data within the packet is accounted for it's hash
+                packetCrc ^= packetIndex;
+                packetCrc ^= packetCount;
+                packetCrc ^= packetLength;
+
+                var headerInfo = (packetIndex, packetCount, packetLength, packetCrc);
+                samplesPosition = (samplesPosition.time, offset: 0);
+                samplesPosition = WriteDataHeaderToSamples(samples, samplesPosition, headerInfo);
+                samplesPosition = WriteDataToSamples(samples, samplesPosition, packet.Data, packetLength);
+                samplesPosition = WriteSignalToSamples(samples, samplesPosition, (audioPacketPreambleSize, packetSignal));
+
+                wavSourceStream.WriteSamples(samples, 0, samplesPosition.offset);
+            }
+            ReportCreateProgress(encodedPackets, playCount * packetCount);
+        }
+    }
+
+    samples = new float[audioFooterPreambleSize * samplesPerSignal];
+    samplesPosition = (samplesPosition.time, offset: 0);
+    samplesPosition = WriteSignalToSamples(samples, samplesPosition, (audioFooterPreambleSize, packetSignal));
+    wavSourceStream.WriteSamples(samples, 0, samplesPosition.offset);
 
     (int time, int offset) WriteDataHeaderToSamples(float[] samplesData, (int time, int offset) position, (short packetIndex, short packetCount, short packetLength, short packetCrc) header)
     {
@@ -318,7 +317,7 @@ async Task BytesToWav()
     }
 
     IEnumerable<float> CreateWave((int count, int frequency) shape, int time)
-    {        
+    {
         for (var i = 0; i < shape.count * samplesPerSignal; i++)
         {
             var t = i + time;
@@ -352,22 +351,22 @@ async Task<int> WavToBytes()
     byte decodedByte = 0;
     var packetsCount = 0;
     var bitPosition = 0;
-    var signalRepeat = 0;    
-    var lastSignal = bitSeparator;        
+    var signalRepeat = 0;
+    var lastSignal = bitSeparator;
 
     await using var waveStream = new WaveFileReader(outputWavPath);
     if (segmentLength > waveStream.SampleCount)
         throw new IndexOutOfRangeException("Samples per signal should be less than length of an audio");
     var segment = new float[segmentLength];
     for (var i = segmentLength - segmentOverlap; i < segmentLength; i++)
-        segment[i] = waveStream.ReadNextSampleFrame().Single();    
+        segment[i] = waveStream.ReadNextSampleFrame().Single();
     for (var i = segmentOverlap; i < waveStream.SampleCount - (segmentLength - segmentOverlap); i += segmentLength - segmentOverlap)
     {
         //shift segment as defined by overlap
         Array.Copy(segment, segmentLength - segmentOverlap, segment, 0, segmentOverlap);
         for (var j = segmentOverlap; j < segmentLength; j++)
             segment[j] = waveStream.ReadNextSampleFrame().Single();
-        
+
         //parse signal
         var frequency = GetDominantFrequency(segment, 0, segment.Length);
         var signal = DecodeSignal(frequency);
