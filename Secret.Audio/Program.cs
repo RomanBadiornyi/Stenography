@@ -2,6 +2,7 @@
 using MathNet.Numerics.IntegralTransforms;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using System;
 
 Enum.TryParse<Mode>("Dual", true, out var mode);
 var randomizePackets = bool.Parse(bool.TrueString);
@@ -257,14 +258,8 @@ async Task BytesToWav()
             packetLength = (short)packet.Data.Length;
             if (!File.Exists(Path.Combine(packetsDirectoryPath, $"packet.{packetIndex}")))
             {
-                var packetCrc = CalculateArrayCrc(packet.Data, 0, packetLength);
-                //ensure all data within the packet is accounted for it's hash
-                packetCrc ^= packetIndex;
-                packetCrc ^= packetCount;
-                packetCrc ^= packetLength;
-
-                var headerInfo = (packetIndex, packetCount, packetLength, packetCrc);
                 samplesPosition = (samplesPosition.time, offset: 0);
+                var headerInfo = CreatePacketHeader((packetIndex, packetCount, packetLength), packet.Data, 0, packetLength);                
                 samplesPosition = WriteDataHeaderToSamples(samples, samplesPosition, headerInfo);
                 samplesPosition = WriteDataToSamples(samples, samplesPosition, packet.Data, packetLength);
                 samplesPosition = WriteSignalToSamples(samples, samplesPosition, (audioPacketPreambleSize, packetSignal));
@@ -361,6 +356,7 @@ async Task<int> WavToBytes()
         //shift segment as defined by overlap
         Array.Copy(segment, segmentLength - segmentOverlap, segment, 0, segmentOverlap);
         for (var j = segmentOverlap; j < segmentLength; j++)
+            //read single frame as we expect mono audio 
             segment[j] = waveStream.ReadNextSampleFrame().Single();
 
         //parse signal
@@ -418,21 +414,18 @@ async Task<int> WavToBytes()
     }
     return packetsCount;
 
-    async Task<int> TryWritePacket(byte[] dataDecoded, int dataLength)
+    async Task<int> TryWritePacket(byte[] packetDecoded, int packetDecodedLength)
     {
-        if (dataLength <= dataDecoded.Length)
+        if (packetDecodedLength <= packetDecoded.Length)
         {
-            short packetIndex = BitConverter.ToInt16(dataDecoded, sizeof(short) * 0);
-            short packetCount = BitConverter.ToInt16(dataDecoded, sizeof(short) * 1);
-            short packetLength = BitConverter.ToInt16(dataDecoded, sizeof(short) * 2);
-            short packetCrc = BitConverter.ToInt16(dataDecoded, sizeof(short) * 3);
+            short packetIndex = BitConverter.ToInt16(packetDecoded, sizeof(short) * 0);
+            short packetCount = BitConverter.ToInt16(packetDecoded, sizeof(short) * 1);
+            short packetLength = BitConverter.ToInt16(packetDecoded, sizeof(short) * 2);
+            short packetCrc = BitConverter.ToInt16(packetDecoded, sizeof(short) * 3);
 
-            var packetCrcReceived = CalculateArrayCrc(dataDecoded, packetHeaderSize, packetLength);
-            packetCrcReceived ^= packetIndex;
-            packetCrcReceived ^= packetCount;
-            packetCrcReceived ^= packetLength;
+            var packetHeader = CreatePacketHeader((packetIndex, packetCount, packetLength), packetDecoded, packetHeaderSize, packetLength);
 
-            if (packetIndex >= 0 && packetCrcReceived == packetCrc && dataDecoded.Length - packetHeaderSize >= packetLength)
+            if (packetIndex >= 0 && packetHeader.packetCrc == packetCrc && packetDecoded.Length - packetHeaderSize >= packetLength)
             {
                 var packetId = $"packet.{packetIndex}";
                 var packetOutPath = Path.Combine(packetsDirectoryPath, packetId);
@@ -440,7 +433,7 @@ async Task<int> WavToBytes()
                 {
                     Console.WriteLine("Decoded packet: {0}", packetId);
                     await using var outputStream = new FileStream(packetOutPath, FileMode.Create);
-                    await outputStream.WriteAsync(dataDecoded, packetHeaderSize, packetLength);
+                    await outputStream.WriteAsync(packetDecoded.AsMemory(packetHeaderSize, packetLength));
                 }
                 return packetCount;
             }
@@ -517,14 +510,21 @@ async Task RecordBytes(IWaveIn waveIn, Func<IWaveIn, Task> playAction)
     await Task.WhenAll(recordingTask, playbackTask);
 }
 
-short CalculateArrayCrc(byte[] array, int offset, int count)
+(short packetIndex, short packetCount, short packetLength, short packetCrc) CreatePacketHeader(
+    (short packetIndex, short packetCount, short packetLength) headerInfo, byte[] array, int offset, int count)
 {
     const short prime = 31;
 
-    short hash = 0;
+    int hash = 0;
     for (var i = offset; i - offset < count && i < array.Length; i++)
-        hash ^= (short)(array[i].GetHashCode() * prime);
-    return hash;
+        hash ^= array[i].GetHashCode() * prime;
+    //we use 2 bytes for checksum of packet hence why do xor to convert 4 bytes hash to 2 bytes
+    short packetCrc = (short)((hash & 0xFFFF) ^ (hash >> 16));
+    //ensure all data within the packet is accounted for it's hash
+    packetCrc ^= headerInfo.packetIndex;
+    packetCrc ^= headerInfo.packetCount;
+    packetCrc ^= headerInfo.packetLength;        
+    return (headerInfo.packetIndex, headerInfo.packetCount, headerInfo.packetLength, packetCrc);
 }
 
 string PreparePacketsDir()
