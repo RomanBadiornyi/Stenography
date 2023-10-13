@@ -6,8 +6,6 @@ using NAudio.Wave;
 Enum.TryParse<Mode>("Dual", true, out var mode);
 var randomizePackets = bool.Parse(bool.TrueString);
 
-const short prime = 31;
-
 const int samplesRate = 192000;
 //in unreliable transfer this can be increase to repeat more same signal for better decoding
 //should be equal or more than 4, otherwise frequency value can't be reliably detected as there are not enough samples
@@ -17,6 +15,7 @@ const int samplesPerSignal = 16 * 4;
 //should be equal or less than samplesPerSignal
 const int segmentLength = samplesPerSignal;
 //should be equal or less than segmentLength
+//by default set it to 50% overlap
 const int segmentOverlap = samplesPerSignal * 2 / 4;
 
 const float amplitude = 0.75f;
@@ -36,6 +35,7 @@ const int packetSeparator = 3;
 const int audioHeaderPreambleSize = 8 * 1024;
 const int audioFooterPreambleSize = 8 * 1024;
 const int audioPacketPreambleSize = 8 * 128;
+const int audioPacketPreambleDetection = 8;
 
 const int packetHeaderSize = 4 * sizeof(short);
 const int packetSize = 1 * 1024;
@@ -96,16 +96,14 @@ switch (mode)
         break;
 }
 
-if (mode is Mode.Decoding)
-{
-    await WavToBytes();
-}
-
 if (mode is Mode.Dual or Mode.Recording)
 {
     if (File.Exists(outputDataPath))
         File.Delete(outputDataPath);
+}
 
+if (mode is Mode.Dual or Mode.Recording or Mode.Decoding)
+{    
     Console.WriteLine("Start decoding");
     var packetsCount = await WavToBytes();
     if (packetsCount >= 0)
@@ -186,7 +184,7 @@ async Task StopRecording(IWaveIn? waveIn, int timeoutSeconds)
 
 async Task TryCombineDecodedPackets(int packetsCount)
 {
-    var packetsDirectoryPath = EncodedPacketsDir();
+    var packetsDirectoryPath = PreparePacketsDir();
     if (Directory.Exists(packetsDirectoryPath))
     {
         var packetFiles = Directory.GetFiles(packetsDirectoryPath);
@@ -197,8 +195,7 @@ async Task TryCombineDecodedPackets(int packetsCount)
             {
                 await using var outputChunkStream = new FileStream(filePath, FileMode.Open);
                 await outputChunkStream.CopyToAsync(outputStream);
-            }
-            Directory.Delete(packetsDirectoryPath, true);
+            }            
             Console.WriteLine("Data received");
         }
         else
@@ -212,7 +209,7 @@ async Task BytesToWav()
 {
     var lastPercent = 0d;
 
-    var packetsDirectoryPath = EncodedPacketsDir();
+    var packetsDirectoryPath = PreparePacketsDir();
 
     var packets = new List<(short Index, byte[] Data)>();
     short packetIndex = 0;
@@ -341,9 +338,7 @@ async Task<int> WavToBytes()
 {
     var lastPercent = 0d;
 
-    var packetsDirectoryPath = EncodedPacketsDir();
-    if (!Directory.Exists(packetsDirectoryPath))
-        Directory.CreateDirectory(packetsDirectoryPath);
+    var packetsDirectoryPath = PreparePacketsDir();    
 
     var decodedDataBuffer = new byte[packetHeaderSize + packetSize];
     var decodedDataBufferIndex = 0;
@@ -370,15 +365,19 @@ async Task<int> WavToBytes()
         //parse signal
         var frequency = GetDominantFrequency(segment, 0, segment.Length);
         var signal = DecodeSignal(frequency);
-
-        //skip if signal is same as last detected or unrecognized
-        if (signal != packetSeparator)
-            signalRepeat = 0;
+        
+        //skip if signal is unrecognized
         if (signal == -1)
+            continue;            
+        
+        //count number of packet signals received and trigger packet complete logic only when it's reaching threshold        
+        if (signal != packetSeparator)
+            signalRepeat = 0;        
+        if (signal == packetSeparator && signalRepeat++ < audioPacketPreambleDetection)        
             continue;
+
+        //skip if next decoded signal is same as previously handled one
         if (signal == lastSignal)
-            continue;
-        if (signal == packetSeparator && signalRepeat++ < 4)
             continue;
 
         //handle new signal
@@ -434,7 +433,7 @@ async Task<int> WavToBytes()
 
             if (packetIndex >= 0 && packetCrcReceived == packetCrc && dataDecoded.Length - packetHeaderSize >= packetLength)
             {
-                var packetId = $"package.{packetIndex}";
+                var packetId = $"packet.{packetIndex}";
                 var packetOutPath = Path.Combine(packetsDirectoryPath, packetId);
                 if (!File.Exists(packetOutPath))
                 {
@@ -519,17 +518,21 @@ async Task RecordBytes(IWaveIn waveIn, Func<IWaveIn, Task> playAction)
 
 short CalculateArrayCrc(byte[] array, int offset, int count)
 {
+    const short prime = 31;
+
     short hash = 0;
     for (var i = offset; i - offset < count && i < array.Length; i++)
         hash ^= (short)(array[i].GetHashCode() * prime);
     return hash;
 }
 
-string EncodedPacketsDir()
+string PreparePacketsDir()
 {
     var baseDirName = Path.GetDirectoryName(outputDataPath);
     var baseFileName = Path.GetFileName(outputDataPath);
     var packetsDirectoryPath = Path.Combine(baseDirName!, baseFileName) + ".tmp";
+    if (!Directory.Exists(packetsDirectoryPath))
+        Directory.CreateDirectory(packetsDirectoryPath);
     return packetsDirectoryPath;
 }
 
