@@ -196,6 +196,7 @@ async Task TryCombineDecodedPackets(int packetsCount)
                 await using var outputChunkStream = new FileStream(filePath, FileMode.Open);
                 await outputChunkStream.CopyToAsync(outputStream);
             }            
+            Directory.Delete(packetsDirectoryPath, true);
             Console.WriteLine("Data received");
         }
         else
