@@ -538,8 +538,8 @@ string PreparePacketsDir()
 
 internal enum Mode
 {
-    Playing,
-    Recording,
     Dual,
+    Playing,
+    Recording,    
     Decoding
 }
