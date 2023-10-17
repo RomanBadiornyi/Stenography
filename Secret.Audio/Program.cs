@@ -360,6 +360,7 @@ async Task<int> WavToBytes()
             segment[j] = waveStream.ReadNextSampleFrame().Single();
 
         //parse signal
+        ApplyHammingWindow(segment);
         var frequency = GetDominantFrequency(segment, 0, segment.Length);
         var signal = DecodeSignal(frequency);
         
@@ -458,6 +459,15 @@ async Task<int> WavToBytes()
 
     bool InRange(double a, double start, double end)
         => a >= start && a <= end;
+
+    void ApplyHammingWindow(float[] waveSample)
+    {
+        for (int i = 0; i < waveSample.Length; i++)
+        {
+            var hammingCoefficient  = 0.53836 - (0.46164 * Math.Cos(2 * Math.PI * i / (waveSample.Length - 1)));
+            waveSample[i] = (float)(waveSample[i] * hammingCoefficient);
+        }
+    }        
 
     double GetDominantFrequency(float[] waveSample, int offset, int count)
     {
